@@ -13,7 +13,7 @@ import (
 	"github.com/jacobsa/go-serial/serial"
 	"go.uber.org/zap"
 
-	"github.com/omriharel/deej/pkg/deej/util"
+	"github.com/VForVika/deej/pkg/deej/util"
 )
 
 // SerialIO provides a deej-aware abstraction layer to managing serial I/O
@@ -31,8 +31,10 @@ type SerialIO struct {
 
 	lastKnownNumSliders        int
 	currentSliderPercentValues []float32
+	currentButtons             int
 
-	sliderMoveConsumers []chan SliderMoveEvent
+	sliderMoveConsumers             []chan SliderMoveEvent
+	buttonStateChangeEventConsumers []chan ButtonStateChangeEvent
 }
 
 // SliderMoveEvent represents a single slider move captured by deej
@@ -41,7 +43,15 @@ type SliderMoveEvent struct {
 	PercentValue float32
 }
 
-var expectedLinePattern = regexp.MustCompile(`^\d{1,4}(\|\d{1,4})*\r\n$`)
+// ButtonStateChangeEvent represents a single slider move captured by deej
+type ButtonStateChangeEvent struct {
+	ButtonId int
+	Pressed  bool
+}
+
+var expectedLinePattern = regexp.MustCompile(`^P\d{1,4}(P\d{1,4})*B\d\n$`)
+var sliderValuePattern = regexp.MustCompile(`P(\d{1,4})`)
+var buttonValuePattern = regexp.MustCompile(`B(\d{1,4})`)
 
 // NewSerialIO creates a SerialIO instance that uses the provided deej
 // instance's connection info to establish communications with the arduino chip
@@ -49,12 +59,13 @@ func NewSerialIO(deej *Deej, logger *zap.SugaredLogger) (*SerialIO, error) {
 	logger = logger.Named("serial")
 
 	sio := &SerialIO{
-		deej:                deej,
-		logger:              logger,
-		stopChannel:         make(chan bool),
-		connected:           false,
-		conn:                nil,
-		sliderMoveConsumers: []chan SliderMoveEvent{},
+		deej:                            deej,
+		logger:                          logger,
+		stopChannel:                     make(chan bool),
+		connected:                       false,
+		conn:                            nil,
+		sliderMoveConsumers:             []chan SliderMoveEvent{},
+		buttonStateChangeEventConsumers: []chan ButtonStateChangeEvent{},
 	}
 
 	logger.Debug("Created serial i/o instance")
@@ -142,6 +153,15 @@ func (sio *SerialIO) Stop() {
 func (sio *SerialIO) SubscribeToSliderMoveEvents() chan SliderMoveEvent {
 	ch := make(chan SliderMoveEvent)
 	sio.sliderMoveConsumers = append(sio.sliderMoveConsumers, ch)
+
+	return ch
+}
+
+// SubscribeToButtonStateChangeEvents returns an unbuffered channel that receives
+// a ButtonStateChangeEvent struct every button state changed (pressed -> unpressed and vice versa)
+func (sio *SerialIO) SubscribeToButtonStateChangeEvents() chan ButtonStateChangeEvent {
+	ch := make(chan ButtonStateChangeEvent)
+	sio.buttonStateChangeEventConsumers = append(sio.buttonStateChangeEventConsumers, ch)
 
 	return ch
 }
@@ -236,11 +256,24 @@ func (sio *SerialIO) handleLine(logger *zap.SugaredLogger, line string) {
 	}
 
 	// trim the suffix
-	line = strings.TrimSuffix(line, "\r\n")
+	line = strings.TrimSuffix(line, "\n")
 
+	sio.handleSliders(logger, line)
+	sio.handleButtons(logger, line)
+}
+
+func (sio *SerialIO) handleSliders(logger *zap.SugaredLogger, line string) {
 	// split on pipe (|), this gives a slice of numerical strings between "0" and "1023"
-	splitLine := strings.Split(line, "|")
-	numSliders := len(splitLine)
+	matches := sliderValuePattern.FindAllStringSubmatch(line, -1)
+
+	var sliderValues []int
+	for _, match := range matches {
+
+		// convert string values to integers ("1023" -> 1023)
+		number, _ := strconv.Atoi(match[1])
+		sliderValues = append(sliderValues, number)
+	}
+	numSliders := len(sliderValues)
 
 	// update our slider count, if needed - this will send slider move events for all
 	if numSliders != sio.lastKnownNumSliders {
@@ -256,20 +289,16 @@ func (sio *SerialIO) handleLine(logger *zap.SugaredLogger, line string) {
 
 	// for each slider:
 	moveEvents := []SliderMoveEvent{}
-	for sliderIdx, stringValue := range splitLine {
-
-		// convert string values to integers ("1023" -> 1023)
-		number, _ := strconv.Atoi(stringValue)
-
+	for sliderIdx, number := range sliderValues {
 		// turns out the first line could come out dirty sometimes (i.e. "4558|925|41|643|220")
 		// so let's check the first number for correctness just in case
-		if sliderIdx == 0 && number > 1023 {
+		if sliderIdx == 0 && number > sio.deej.config.SliderResolution {
 			sio.logger.Debugw("Got malformed line from serial, ignoring", "line", line)
 			return
 		}
 
 		// map the value from raw to a "dirty" float between 0 and 1 (e.g. 0.15451...)
-		dirtyFloat := float32(number) / 1023.0
+		dirtyFloat := float32(number) / float32(sio.deej.config.SliderResolution)
 
 		// normalize it to an actual volume scalar between 0.0 and 1.0 with 2 points of precision
 		normalizedScalar := util.NormalizeScalar(dirtyFloat)
@@ -303,5 +332,26 @@ func (sio *SerialIO) handleLine(logger *zap.SugaredLogger, line string) {
 				consumer <- moveEvent
 			}
 		}
+	}
+}
+
+func (sio *SerialIO) handleButtons(logger *zap.SugaredLogger, line string) {
+	// split on pipe (|), this gives a slice of numerical strings between "0" and "1023"
+	raw := buttonValuePattern.FindStringSubmatch(line)
+	if len(raw) != 2 {
+		logger.Infow("Missing buttons value", "raw", raw)
+		return
+	}
+
+	number, err := strconv.Atoi(raw[1])
+
+	if err != nil {
+		logger.Infow("Invalid buttons value", "err", err)
+		return
+	}
+
+	if sio.currentButtons != number {
+		sio.currentButtons = number
+		logger.Infow("Buttons value", "number", number)
 	}
 }

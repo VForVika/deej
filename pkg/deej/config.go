@@ -2,6 +2,7 @@ package deej
 
 import (
 	"fmt"
+	"math"
 	"path"
 	"strings"
 	"time"
@@ -10,7 +11,7 @@ import (
 	"github.com/spf13/viper"
 	"go.uber.org/zap"
 
-	"github.com/omriharel/deej/pkg/deej/util"
+	"github.com/VForVika/deej/pkg/deej/util"
 )
 
 // CanonicalConfig provides application-wide access to configuration fields,
@@ -26,6 +27,7 @@ type CanonicalConfig struct {
 	InvertSliders bool
 
 	NoiseReductionLevel string
+	SliderResolution    int
 
 	logger             *zap.SugaredLogger
 	notifier           Notifier
@@ -35,6 +37,7 @@ type CanonicalConfig struct {
 
 	userConfig     *viper.Viper
 	internalConfig *viper.Viper
+	ConfigEditor   string
 }
 
 const (
@@ -53,9 +56,15 @@ const (
 	configKeyCOMPort             = "com_port"
 	configKeyBaudRate            = "baud_rate"
 	configKeyNoiseReductionLevel = "noise_reduction"
+	configSliderResolution       = "slider_resolution"
+	configConfigEditor           = "config_editor"
 
-	defaultCOMPort  = "COM4"
-	defaultBaudRate = 9600
+	defaultCOMPort          = "COM4"
+	defaultBaudRate         = 9600
+	defaultSliderResolution = 10
+
+	defaultConfigEditorWindows = "notepad.exe"
+	defaultConfigEditorLinux   = "gedit"
 )
 
 // has to be defined as a non-constant because we're using path.Join
@@ -89,6 +98,13 @@ func NewConfig(logger *zap.SugaredLogger, notifier Notifier) (*CanonicalConfig, 
 	userConfig.SetDefault(configKeyInvertSliders, false)
 	userConfig.SetDefault(configKeyCOMPort, defaultCOMPort)
 	userConfig.SetDefault(configKeyBaudRate, defaultBaudRate)
+	userConfig.SetDefault(configSliderResolution, defaultSliderResolution)
+
+	if util.Linux() {
+		userConfig.SetDefault(configConfigEditor, defaultConfigEditorLinux)
+	} else {
+		userConfig.SetDefault(configConfigEditor, defaultConfigEditorWindows)
+	}
 
 	internalConfig := viper.New()
 	internalConfig.SetConfigName(internalConfigName)
@@ -238,6 +254,9 @@ func (cc *CanonicalConfig) populateFromVipers() error {
 
 	cc.InvertSliders = cc.userConfig.GetBool(configKeyInvertSliders)
 	cc.NoiseReductionLevel = cc.userConfig.GetString(configKeyNoiseReductionLevel)
+	cc.ConfigEditor = cc.userConfig.GetString(configConfigEditor)
+	// Bits to max number - 1
+	cc.SliderResolution = int(math.Pow(2, float64(cc.userConfig.GetInt(configSliderResolution)))) - 1
 
 	cc.logger.Debug("Populated config fields from vipers")
 

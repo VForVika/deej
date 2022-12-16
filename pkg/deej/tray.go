@@ -3,8 +3,8 @@ package deej
 import (
 	"github.com/getlantern/systray"
 
-	"github.com/omriharel/deej/pkg/deej/icon"
-	"github.com/omriharel/deej/pkg/deej/util"
+	"github.com/VForVika/deej/pkg/deej/icon"
+	"github.com/VForVika/deej/pkg/deej/util"
 )
 
 func (d *Deej) initializeTray(onDone func()) {
@@ -47,11 +47,7 @@ func (d *Deej) initializeTray(onDone func()) {
 				case <-editConfig.ClickedCh:
 					logger.Info("Edit config menu item clicked, opening config for editing")
 
-					editor := "notepad.exe"
-					if util.Linux() {
-						editor = "gedit"
-					}
-
+					editor := d.config.ConfigEditor
 					if err := util.OpenExternal(logger, editor, userConfigFilepath); err != nil {
 						logger.Warnw("Failed to open config file for editing", "error", err)
 					}
