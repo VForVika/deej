@@ -2,14 +2,14 @@ package deej
 
 import (
 	"fmt"
+	"github.com/VForVika/deej/pkg/deej/keyboard"
+	"github.com/VForVika/deej/pkg/deej/util"
+	"github.com/thoas/go-funk"
+	"go.uber.org/zap"
 	"regexp"
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/VForVika/deej/pkg/deej/util"
-	"github.com/thoas/go-funk"
-	"go.uber.org/zap"
 )
 
 type sessionMap struct {
@@ -21,8 +21,9 @@ type sessionMap struct {
 
 	sessionFinder SessionFinder
 
-	lastSessionRefresh time.Time
-	unmappedSessions   []Session
+	lastSessionRefresh  time.Time
+	unmappedSessions    []Session
+	lastButtonPressTime map[uint8]time.Time
 }
 
 const (
@@ -61,11 +62,12 @@ func newSessionMap(deej *Deej, logger *zap.SugaredLogger, sessionFinder SessionF
 	logger = logger.Named("sessions")
 
 	m := &sessionMap{
-		deej:          deej,
-		logger:        logger,
-		m:             make(map[string][]Session),
-		lock:          &sync.Mutex{},
-		sessionFinder: sessionFinder,
+		deej:                deej,
+		logger:              logger,
+		m:                   make(map[string][]Session),
+		lock:                &sync.Mutex{},
+		sessionFinder:       sessionFinder,
+		lastButtonPressTime: make(map[uint8]time.Time),
 	}
 
 	logger.Debug("Created session map instance")
@@ -81,6 +83,7 @@ func (m *sessionMap) initialize() error {
 
 	m.setupOnConfigReload()
 	m.setupOnSliderMove()
+	m.setupOnButtonStateChange()
 
 	return nil
 }
@@ -144,6 +147,19 @@ func (m *sessionMap) setupOnSliderMove() {
 			select {
 			case event := <-sliderEventsChannel:
 				m.handleSliderMoveEvent(event)
+			}
+		}
+	}()
+}
+
+func (m *sessionMap) setupOnButtonStateChange() {
+	buttonEventChannel := m.deej.serial.SubscribeToButtonStateChangeEvents()
+
+	go func() {
+		for {
+			select {
+			case event := <-buttonEventChannel:
+				m.handleButtonStateChange(event)
 			}
 		}
 	}()
@@ -219,7 +235,7 @@ func (m *sessionMap) handleSliderMoveEvent(event SliderMoveEvent) {
 
 	// if slider not found in config, silently ignore
 	if !ok {
-		return
+		m.logger.Debugw("Failed to find slider for event with ID", "id", event.SliderID)
 	}
 
 	targetFound := false
@@ -268,6 +284,35 @@ func (m *sessionMap) handleSliderMoveEvent(event SliderMoveEvent) {
 		// when a session's SetVolume call errored, such as in the case of a stale master session
 		// (or another, more catastrophic failure happens)
 		m.refreshSessions(true)
+	}
+}
+
+func (m *sessionMap) handleButtonStateChange(event ButtonStateChangeEvent) {
+
+	// first of all, ensure our session map isn't moldy
+	if m.lastSessionRefresh.Add(maxTimeBetweenSessionRefreshes).Before(time.Now()) {
+		m.logger.Debug("Stale session map detected on slider move, refreshing")
+		m.refreshSessions(true)
+	}
+	state := "pressed"
+	if !event.Pressed {
+		state = "unpressed"
+	}
+	dur := time.Now().Sub(m.lastButtonPressTime[event.ButtonId])
+
+	if state == "unpressed" {
+		doubleTap := dur < time.Millisecond*500
+		m.logger.Debugf("%d state changed to %s, dur: %v, double: %v", event.ButtonId, state, dur, doubleTap)
+		m.lastButtonPressTime[event.ButtonId] = time.Now()
+		switch event.ButtonId {
+		case 0:
+			keyboard.PlayPause()
+		case 1:
+			keyboard.Next()
+		case 2:
+			keyboard.Previous()
+		}
+
 	}
 }
 

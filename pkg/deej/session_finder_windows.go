@@ -32,7 +32,7 @@ type wcaSessionFinder struct {
 const (
 
 	// there's no real mystery here, it's just a random GUID
-	myteriousGUID = "{1ec920a1-7db8-44ba-9779-e5d28ed9f330}"
+	mysteriousGUID = "{1ec920a1-7db8-44ba-9779-e5d28ed9f330}"
 
 	// the notification client will call this multiple times in quick succession based on the
 	// default device's assigned media roles, so we need to filter out the extraneous calls
@@ -46,7 +46,7 @@ func newSessionFinder(logger *zap.SugaredLogger) (SessionFinder, error) {
 	sf := &wcaSessionFinder{
 		logger:        logger.Named("session_finder"),
 		sessionLogger: logger.Named("sessions"),
-		eventCtx:      ole.NewGUID(myteriousGUID),
+		eventCtx:      ole.NewGUID(mysteriousGUID),
 	}
 
 	sf.logger.Debug("Created WCA session finder instance")

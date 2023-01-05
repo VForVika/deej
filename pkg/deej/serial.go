@@ -31,7 +31,7 @@ type SerialIO struct {
 
 	lastKnownNumSliders        int
 	currentSliderPercentValues []float32
-	currentButtons             int
+	currentButtons             uint8
 
 	sliderMoveConsumers             []chan SliderMoveEvent
 	buttonStateChangeEventConsumers []chan ButtonStateChangeEvent
@@ -45,7 +45,7 @@ type SliderMoveEvent struct {
 
 // ButtonStateChangeEvent represents a single slider move captured by deej
 type ButtonStateChangeEvent struct {
-	ButtonId int
+	ButtonId uint8
 	Pressed  bool
 }
 
@@ -123,7 +123,7 @@ func (sio *SerialIO) Start() error {
 	// read lines or await a stop
 	go func() {
 		connReader := bufio.NewReader(sio.conn)
-		lineChannel := sio.readLine(namedLogger, connReader)
+		lineChannel, errorChannel := sio.readLine(namedLogger, connReader)
 
 		for {
 			select {
@@ -131,6 +131,24 @@ func (sio *SerialIO) Start() error {
 				sio.close(namedLogger)
 			case line := <-lineChannel:
 				sio.handleLine(namedLogger, line)
+			case err := <-errorChannel:
+				if sio.connected {
+					sio.logger.Errorw("Failed to read line from serial", "error", err)
+					sio.close(namedLogger)
+					go func() {
+						attempt := 0
+						for {
+							<-time.After(time.Second * 5)
+							if err := sio.Start(); err != nil {
+								sio.logger.Warnw("Failed to reinitialize the serial, retrying soon", "error", err, "attempt", attempt)
+								attempt += 1
+							} else {
+								// Recovered successfully
+								return
+							}
+						}
+					}()
+				}
 			}
 		}
 	}()
@@ -218,19 +236,19 @@ func (sio *SerialIO) close(logger *zap.SugaredLogger) {
 	sio.connected = false
 }
 
-func (sio *SerialIO) readLine(logger *zap.SugaredLogger, reader *bufio.Reader) chan string {
+func (sio *SerialIO) readLine(logger *zap.SugaredLogger, reader *bufio.Reader) (chan string, chan error) {
 	ch := make(chan string)
+	errCh := make(chan error)
 
 	go func() {
 		for {
 			line, err := reader.ReadString('\n')
 			if err != nil {
 
-				if sio.deej.Verbose() {
-					logger.Warnw("Failed to read line from serial", "error", err, "line", line)
-				}
+				logger.Warnw("Failed to read line from serial", "error", err, "line", line)
+				errCh <- err
 
-				// just ignore the line, the read loop will stop after this
+				// Stop the read loop
 				return
 			}
 
@@ -243,7 +261,7 @@ func (sio *SerialIO) readLine(logger *zap.SugaredLogger, reader *bufio.Reader) c
 		}
 	}()
 
-	return ch
+	return ch, errCh
 }
 
 func (sio *SerialIO) handleLine(logger *zap.SugaredLogger, line string) {
@@ -343,15 +361,38 @@ func (sio *SerialIO) handleButtons(logger *zap.SugaredLogger, line string) {
 		return
 	}
 
-	number, err := strconv.Atoi(raw[1])
-
+	raw_number, err := strconv.Atoi(raw[1])
+	number := uint8(raw_number)
 	if err != nil {
 		logger.Infow("Invalid buttons value", "err", err)
 		return
 	}
 
 	if sio.currentButtons != number {
+		changes := sio.currentButtons ^ number
 		sio.currentButtons = number
-		logger.Infow("Buttons value", "number", number)
+		idx := uint8(0)
+		var events []ButtonStateChangeEvent
+		for ; changes > 0; changes = changes >> 1 {
+			if changes&1 > 0 {
+				events = append(events, ButtonStateChangeEvent{
+					ButtonId: idx,
+					Pressed:  ((number >> idx) & 1) > 0,
+				})
+
+				if sio.deej.Verbose() {
+					logger.Debugw("Button pressed", "event", events[len(events)-1])
+				}
+			}
+			idx += 1
+		}
+		if len(events) > 0 {
+			for _, consumer := range sio.buttonStateChangeEventConsumers {
+				for _, event := range events {
+					consumer <- event
+				}
+			}
+		}
+
 	}
 }

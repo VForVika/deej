@@ -1,4 +1,4 @@
-// Package deej provides a machine-side client that pairs with an Arduino
+// Package deej provides a machine-side client that pairs with an AVR or STM MCU
 // chip to form a tactile, physical volume control system/
 package deej
 
